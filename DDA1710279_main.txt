@@ -1,0 +1,206 @@
+##########################################################
+Task 0 : Store data on S3
+##########################################################
+
+1. Create a bucket in S3 and upload the data in the bucket: The data is stored under s3/hiveassignmentsuman/hivesuman
+2. Once the cluster is running, open the Hue notebook.: The above bucket is accessible on Hue.
+
+######################################################################################
+
+##########################################################
+Task 1: Understand the data in hand
+##########################################################
+
+#The dataset is of size ~6MB, which should not be deleted. Hence import the entire data in an external table.
+
+#Lets create a Database named cdr_analysis 
+
+create database cdr_analysis;
+use cdr_analysis;
+
+#Lets create an external table
+#The Schema of the data set contains Square ID,Time interval,Country code,SMS-In actitvity,SMS-Out activity,Call-In actitvity,Call-Out activity,Internet traffic activity
+#In order to treat missing/blank values as NULL , lets include TBLPROPERTIES('serialization.null.format'='');
+
+CREATE EXTERNAL TABLE cdr_analysis.cdr(
+Square_id int,
+Time_interval bigint,
+Country_code int,
+SMSin_activity double,
+SMSout_activity double,
+Callin_activity double,
+Callout_activity double,
+Internettraffic_activity double)
+
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t'
+LOCATION 's3://hiveassignmentsuman/hivesuman'
+TBLPROPERTIES('serialization.null.format'='');
+
+#The cdr external table is sucessfully created and Blank values are treated as NULL
+
+########################################################
+#Task 2: Writing Hive Queries - I
+########################################################
+#You are working as an analyst responsible for analysing telecom data of three countries (country_code = 39, 43, 33). First create a table from the external table created in task 1, to store the data corresponding only to these three countries. Do the following analysis on these three countries.
+
+#First create a table from the external table created in task 1, to store the data corresponding only to these three countries (country_code = 39, 43, 33)
+
+CREATE EXTERNAL TABLE IF NOT EXISTS cdr_analysis.threecountries(
+Square_id int,
+Time_interval bigint,
+Country_code int,
+SMSin_activity double,
+SMSout_activity double,
+Callin_activity double,
+Callout_activity double,
+Internettraffic_activity double);
+
+#Insert data into the above table 
+
+insert overwrite table cdr_analysis.threecountries
+select Square_id,Time_interval,Country_code,SMSin_activity,SMSout_activity,Callin_activity,Callout_activity,Internettraffic_activity
+from cdr_analysis.cdr
+WHERE country_code IN (39,43,33);	
+
+#Q1.How many grids (square_ids) are there in total in the given three countries? Display the number of unique grids in the three countries.
+
+
+SELECT count(DISTINCT(square_id)) as Square_ID from cdr_analysis.threecountries;
+
+#OUTPUT
+
+# 	square_id
+#1	240
+	
+#Q2. Which country has the minimum total internet activity? Display the country code of this country. 
+
+SELECT sum(internettraffic_activity) as total_internetactivity ,country_code 
+FROM cdr_analysis.threecountries
+GROUP BY country_code
+ORDER BY total_internetactivity ASC
+LIMIT 1;
+
+#OUTPUT
+ 
+#	total_internetactivity		country_code
+#1	0.150						43
+
+#Q3. Which country among the given three has the second highest total activity? Note that total activity is defined as the sum of sms_in, sms_out, call_in, call_out, internet_traffic. Display the country code of this country. Do not compress the table.
+
+select sum(SMSin_activity)+sum(SMSout_activity)+sum(Callin_activity)+sum(Callout_activity)+sum(Internettraffic_activity) as total_activity,country_code
+from cdr_analysis.threecountries
+group by country_code
+order by total_activity DESC
+limit 1,1;  
+ 	
+#OUTPUT
+#	total_activity		country_code
+#1	205.907				33
+
+#The last line gives the second highest total activity
+
+#Q4. Which squareID has the maximum total SMS activity in these three countries? Note that total SMS activity is the sum of incoming and outgoing SMSes.
+
+select sum(SMSin_activity)+sum(SMSout_activity) as total_sms_activity ,Square_id
+from cdr_analysis.threecountries
+group by Square_id
+order by total_sms_activity desc
+limit 1;
+
+#OUTPUT
+# 	total_sms_activity	square_id
+#1	2063.551389839242	1151
+
+#Q5. What is the total activity for the three countries? Note that total activity is defined as the sum of sms_in, sms_out, call_in, call_out, internet_traffic. For this task, first compress the table that was created in the beginning of task 2. Submit the result upto three decimal places, without rounding off the digits, obtained after compressing the table.
+
+#a) First create a compression (ORC) table  using the ZLIB compression technique
+
+CREATE EXTERNAL TABLE IF NOT EXISTS cdr_analysis.cdr_orc(
+Square_id int,
+Time_interval bigint,
+Country_code int,
+SMSin_activity double,
+SMSout_activity double,
+Callin_activity double,
+Callout_activity double,
+Internettraffic_activity double)
+STORED AS ORC tblproperties ("orc.compress"="ZLIB");
+
+#b. Populate the table using the external table 'threecountries'
+
+INSERT OVERWRITE TABLE cdr_analysis.cdr_orc SELECT * FROM cdr_analysis.threecountries;
+
+#c. Now lets find the total activity for the 3 countries based on the compressed table.Note that total activity is defined as the sum of sms_in, sms_out, call_in, call_out, internet_traffic
+
+select sum(SMSin_activity)+sum(SMSout_activity)+sum(Callin_activity)+sum(Callout_activity)+sum(Internettraffic_activity) as total_activity
+from cdr_analysis.cdr_orc;
+
+#OUTPUT
+# 	total_activity
+#1	568447.5666036925
+
+#########################################################
+#	Task 3: Writing Hive Queries - II
+########################################################
+
+#Now, say you want to analyze a specific country with country code=39. Also, you are analysing the activity of three specific grids with square_ids 101, 102 and 103 in this country.
+#First partition the table you created in the beginning of task 2, which makes it fast and convenient to query this particular country. Use this partitioned table to answer the following questions.  
+
+#a) Lets partition the data on country code 
+
+#creating a new partitioned table
+
+CREATE EXTERNAL TABLE IF NOT EXISTS cdr_analysis.cdr_partition(
+Square_id int,
+Time_interval bigint,
+SMSin_activity double,
+SMSout_activity double,
+Callin_activity double,
+Callout_activity double,
+Internettraffic_activity double)
+PARTITIONED BY (Country_code int);
+
+#Dynamic partition strict mode requires at least one static partition column. To turn this off set hive.exec.dynamic.partition.mode=nonstrict
+SET hive.exec.dynamic.partition.mode = nonstrict;
+#Optional setting
+#Setting the dynamic partiton limit to 40000
+set hive.exec.max.dynamic.partitions.pernode=40000;
+
+#b) importing the data into partitioned table
+INSERT OVERWRITE TABLE cdr_analysis.cdr_partition partition(Country_code)
+SELECT Square_ID,Time_interval,SMSin_activity,SMSout_activity,Callin_activity,Callout_activity,Internettraffic_activity,Country_code FROM cdr_analysis.threecountries;
+
+
+
+#Lets answer the following questions
+#1. What is the total call activity from the three square_ids to country_code 39? Submit the result upto three decimal places, without rounding off the digits.  
+
+select sum(Callin_activity)+sum(Callout_activity) as total_call_activity 
+from cdr_analysis.cdr_partition
+where Country_code=39 and Square_ID in (101,102,103);
+
+#OUTPUT
+# 	total_call_activity
+#1	290.8212455969623
+
+
+#2. What is the total SMS activity from the three square_ids to country_code 39? Submit the result upto three decimal places, without rounding off the digits.
+
+select sum(SMSin_activity)+sum(SMSout_activity) as total_sms_activity 
+from cdr_analysis.cdr_partition
+where Country_code=39 and Square_ID in (101,102,103);
+
+#OUTPUT
+ 	#total_sms_activity
+#1	622.2324058867425
+
+#3.What is the total activity, i.e. sum of CallIn, CallOut, SMSIn, SMSOut, internet traffic of the three square_ids? Submit the result upto three decimal places, without rounding off the digits. You may either compress the partitioned table or not.
+
+select sum(SMSin_activity)+sum(SMSout_activity)+sum(Callin_activity)+sum(Callout_activity)+sum(Internettraffic_activity) as total_activity
+from cdr_analysis.cdr_partition
+where Country_code=39 and Square_ID in (101,102,103);
+
+#OUTPUT
+ 
+	#total_activity
+#1	5344.636554546452
